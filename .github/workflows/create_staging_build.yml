@@ -1,0 +1,28 @@
+name: Release staging build
+
+on:
+  push:
+    branches: [ "release_staging" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      
+          
+      - run: fastlane run set_info_plist_value path:Info.plist key:MyReplacableKey value:KEYED_TO_STAGING  
+      
+      - uses: stefanzweifel/git-auto-commit-action@v4
+      
+      - uses: actions/checkout@master
+      - name: copy file
+        uses: canastro/copy-file-action@master
+        with:
+          source: "release_staging/GoogleFile"
+          target: "GoogleFile"
+          
+      - uses: actions/create-release@v1
