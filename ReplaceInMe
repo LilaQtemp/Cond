@@ -1,1 +1,1097 @@
-dick butt butt butt docl dick dickbutt
+//
+//  RequestManager.swift
+//  PatMe
+//
+//  Created by Jan on 17.02.22.
+//
+
+import SwiftUI
+import RealmSwift
+import FirebaseAuth
+import Firebase
+import UniformTypeIdentifiers
+import ConcurrencyCompatibility
+
+enum RequestError: Error {
+    case badURL
+    case postRequestError
+    case postDataError
+    case getReferencesError
+    case getPaginatedReferencesError
+}
+
+class RequestManager {
+
+    //  superclass, don't call this directly
+    class CustomRequest {
+//        ConfigManager.API_STAGING_URI
+        let uri = ConfigManager.API_STAGING_URI
+        
+        static func request(req: URLRequest) async -> (Data?, URLResponse?, Error?) {
+            guard let token = try? await Auth.auth().currentUser?.idTokenForcingRefresh(true) else {
+                Logger.log(.error, "Unable to get Token, dropping out")
+                return (nil, nil, nil)
+            }
+            
+            //  TODO:   Check if credentials check out here, otherwise log the user out immediately
+            var urlRequest = req
+            Logger.log(.action, "\(req.httpMethod ?? "<no http method>") request to \(req.url?.absoluteString ?? "<no data>")")
+            Logger.log(.action, "Token is: \(token)")
+            
+            //  default json content type if not set
+            if urlRequest.value(forHTTPHeaderField: "Content-Type").isNil {
+                urlRequest.addValue("application/json", forHTTPHeaderField: "Content-Type")
+            }
+            
+            //  auth creds
+            urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            
+            guard let (data, response) = try? await URLSession.shared.data(for: urlRequest) else {
+                Logger.log(.error, "🔴🔴🔴 - Unable to get a valid URLSession")
+                return (nil, nil, nil)
+            }
+            guard let res = response as? HTTPURLResponse else { return (data, response, nil) }
+            guard let url = urlRequest.url else { print("🔴🔴🔴 - Dropped Request!"); return (nil, nil, nil) }
+            guard let method = urlRequest.httpMethod else { print("🔴🔴🔴 - Can't find httpMethod!"); return (nil, nil, nil) }
+            switch res.statusCode {
+            case 200...299:
+                print("🟢 \(res.statusCode) \(method) \"\(url.path)\"")
+            case 400...499:
+                print("🟠 \(res.statusCode) \(method) \"\(url.path)\"")
+            case 500...999:
+                print("🔴 \(res.statusCode) \(method) \"\(url.path)\"")
+            default:
+                print("🔴 \(res.statusCode) \(method) \"\(url.path)\"")
+            }
+            return (data, response, nil)
+        }
+        
+        static func delete(uriComponent: String) async -> (Bool) {
+            guard let url = URL(string: ConfigManager.API_STAGING_URI + uriComponent) else {
+                Logger.log(.error, "🔴🔴 - Unable to build a URL from: \(uriComponent)")
+                return false
+            }
+            var urlRequest = URLRequest(url: url)
+            urlRequest.httpMethod = "DELETE"
+            let (_, response, _) = await request(req: urlRequest)
+            if let response = response as? HTTPURLResponse, response.isResponseOK() {
+                Logger.log(.success, "Deleted successfully \(uriComponent)")
+                return true
+            } else {
+                Logger.log(.error, "Error while deleting \(uriComponent)")
+                return false
+            }
+        }
+        
+        static func post<T:Encodable & Decodable>(uriComponent: String, requestBody: Data? = nil) async -> Result<T, Error> {
+            guard let url = URL(string: ConfigManager.API_STAGING_URI + uriComponent) else {
+                Logger.log(.error, "🔴🔴 - Unable to build a URL from: \(uriComponent)")
+                return .failure(RequestError.badURL)
+            }
+            var urlRequest = URLRequest(url: url)
+            urlRequest.httpMethod = "POST"
+            urlRequest.httpBody = requestBody
+            let (data, response, error) = await request(req: urlRequest)
+            if let response = response as? HTTPURLResponse, response.isResponseOK() {
+                guard let data = data else {
+                    Logger.log(.error, "Error converting data from server")
+                    return .failure(RequestError.postDataError)
+                }
+                do {
+                    let result = try JSONDecoder().decode(T.self, from: data)
+                    return .success(result)
+                } catch let error {
+                    Logger.log(.error, "Error getSingle \(uriComponent) : \(error)")
+                    return .failure(RequestError.postRequestError)
+                }
+            } else {
+                Logger.log(.error, "error: \(error.debugDescription), response: \(response.debugDescription), data: \(String(data: data ?? Data(), encoding: String.Encoding.utf8) ?? ""), requestBody: \(String(data: requestBody ?? Data(), encoding: String.Encoding.utf8) ?? "")")
+                return .failure(RequestError.postRequestError)
+            }
+        }
+        
+        static func post(uriComponent: String, multipartRequest: MultipartFormDataRequest) async -> (Bool, RealmFile?) {
+            let mReq = multipartRequest.asURLRequest()
+            let (data, response, error) = await request(req: mReq)
+            guard let data = data, let resp = try? JSONDecoder().decode(RealmFile.self, from: data) else { Logger.log(.error, "Error while decoding response from Backend"); return (false, nil)}
+            if let response = response as? HTTPURLResponse, response.isResponseOK() {
+                return (true, resp)
+            } else {
+                let body = String(data: data, encoding: String.Encoding.utf8)
+                Logger.log(.error, "POST [\(uriComponent)] multipart error: \nbody:\n\(body as String?) \nresponse:\n\(response as URLResponse?) \nrequestBody:\n\(String(data: mReq.httpBody ?? Data(), encoding: String.Encoding.utf8) as String?)\nerror:\n\(error as Error?)")
+                return (false, resp)
+            }
+        }
+        
+        static func patch(uriComponent: String, requestBody: Data? = nil) async -> (Bool) {
+            guard let url = URL(string: ConfigManager.API_STAGING_URI + uriComponent) else {
+                Logger.log(.error, "🔴🔴 - Unable to build a URL from: \(uriComponent)")
+                return false
+            }
+            var urlRequest = URLRequest(url: url)
+            urlRequest.httpMethod = "PATCH"
+            urlRequest.httpBody = requestBody
+            let (data, response, error) = await request(req: urlRequest)
+            if let response = response as? HTTPURLResponse, response.isResponseOK() {
+                return true
+            } else {
+                let body = String(data: data ?? Data(), encoding: String.Encoding.utf8)
+                Logger.log(.error, "PATCH error: \(body as String?) \(response as URLResponse?) \(error as Error?)")
+                return false
+            }
+        }
+        
+        static func getRawData(uriComponent: String, mimeType: String) async -> (Data?) {
+            guard let url = URL(string: ConfigManager.API_STAGING_URI + uriComponent) else {
+                Logger.log(.error, "🔴🔴 - Unable to build a URL from: \(uriComponent)")
+                return nil
+            }
+            var urlRequest = URLRequest(url: url)
+            urlRequest.httpMethod = "GET"
+            urlRequest.addValue("", forHTTPHeaderField: "Content-Type")
+            let (data, response, error) = await request(req: urlRequest)
+            if let response = response as? HTTPURLResponse, response.isResponseOK() {
+                guard let data = data else {
+                    Logger.log(.error, "Error converting data from server")
+                    return nil
+                }
+                Logger.log(.success, "GET raw data succeeded, passing to callback")
+                return data
+            } else {
+                let body = String(data: data ?? Data(), encoding: String.Encoding.utf8)
+                Logger.log(.error, "GET raw data error: \(body as String?) \(response as URLResponse?) \(error as Error?)")
+                return nil
+            }
+        }
+        
+        static func getSingle<T:Encodable & Decodable>(uriComponent: String) async -> (T?) {
+            guard let url = URL(string: ConfigManager.API_STAGING_URI + uriComponent) else {
+                Logger.log(.error, "🔴🔴 - Unable to build a URL from: \(uriComponent)")
+                return nil
+            }
+            var urlRequest = URLRequest(url: url)
+            urlRequest.httpMethod = "GET"
+            let (data, response, error) = await request(req: urlRequest)
+            if let response = response as? HTTPURLResponse, response.isResponseOK() {
+                guard let data = data else {
+                    Logger.log(.error, "Error converting data from server")
+                    return nil
+                }
+                do {
+                    let result = try JSONDecoder().decode(T.self, from: data)
+                    return result
+                } catch let error {
+                    Logger.log(.error, "Error getSingle \(uriComponent) : \(error)")
+                    return nil
+                }
+            } else {
+                let body = String(data: data ?? Data(), encoding: String.Encoding.utf8)
+                Logger.log(.error, "GET error: \(body as String?) \(response as URLResponse?) \(error as Error?)")
+                return nil
+            }
+        }
+        
+        static func getSinglePaginated<T:Encodable & Decodable>(uriComponent: String) async -> (APIPaginatedWrapper<T>?) {
+            guard let url = URL(string: ConfigManager.API_STAGING_URI + uriComponent) else {
+                Logger.log(.error, "🔴🔴 - Unable to build a URL from: \(uriComponent)")
+                return nil
+            }
+            var urlRequest = URLRequest(url: url)
+            urlRequest.httpMethod = "GET"
+            let (data, response, error) = await request(req: urlRequest)
+            if let response = response as? HTTPURLResponse, response.isResponseOK() {
+                guard let data = data else {
+                    Logger.log(.error, "Error converting data from server")
+                    return nil
+                }
+                do {
+                    let result = try JSONDecoder().decode(APIPaginatedWrapper<T>.self, from: data)
+                    return result
+                } catch let error {
+                    Logger.log(.error, "Error getSinglePaginated \(uriComponent) : \(error) \(data.debugDescription)")
+                    let requestBodyString = String(data: data, encoding: String.Encoding.utf8)
+                    Logger.log(.error, "URIComponent [\(uriComponent)] Body: \(requestBodyString as String?)")
+                    return nil
+                }
+            } else {
+                let body = String(data: data ?? Data(), encoding: String.Encoding.utf8)
+                Logger.log(.error, "GET error: \(body as String?) \(response as URLResponse?) \(error as Error?)")
+                return nil
+            }
+        }
+        
+        static func getSinglePaginatedReferences<T:Encodable & Decodable>(uriComponent: String) async -> Result<APIPaginatedWrapperReferences<T>?, Error> {
+            guard let url = URL(string: ConfigManager.API_STAGING_URI + uriComponent) else {
+                Logger.log(.error, "🔴🔴 - Unable to build a URL from: \(uriComponent)")
+                return .failure(RequestError.getPaginatedReferencesError)
+            }
+            var urlRequest = URLRequest(url: url)
+            urlRequest.httpMethod = "GET"
+            let (data, response, error) = await request(req: urlRequest)
+            if let response = response as? HTTPURLResponse, response.isResponseOK() {
+                guard let data = data else {
+                    Logger.log(.error, "Error converting data from server")
+                    return .failure(RequestError.getPaginatedReferencesError)
+                }
+                do {
+                    let result = try JSONDecoder().decode(APIPaginatedWrapper<T>.self, from: data)
+                    let ret = APIPaginatedWrapperReferences(page: result.page, size: result.size, totalCount: result.totalCount, entries: result.entries.map({ ThreadSafeReference(to: $0) }))
+                    return .success(ret)
+                } catch let error {
+                    Logger.log(.error, "Error getSinglePaginated \(uriComponent) : \(error) \(data.debugDescription)")
+                    let requestBodyString = String(data: data, encoding: String.Encoding.utf8)
+                    Logger.log(.error, "URIComponent [\(uriComponent)] Body: \(requestBodyString as String?)")
+                    return .failure(RequestError.getPaginatedReferencesError)
+                }
+            } else {
+                let body = String(data: data ?? Data(), encoding: String.Encoding.utf8)
+                Logger.log(.error, "GET error: \(body as String?) \(response as URLResponse?) \(error as Error?)")
+                return .failure(RequestError.getPaginatedReferencesError)
+            }
+        }
+        
+        static func getMultiple<T:Encodable & Decodable>(uriComponent: String = "", page: Int? = nil) async -> [T]? {
+            guard var url = URLComponents(string: ConfigManager.API_STAGING_URI + uriComponent) else {
+                Logger.log(.error, "🔴🔴 - Unable to build a URL from: \(uriComponent)")
+                return nil
+            }
+            if let page = page {
+                url.queryItems = [
+                    URLQueryItem(name: "page", value: "\(page)")
+                ]
+            }
+            guard let finishedUrl = url.url else {
+                Logger.log(.error, "🔴🔴 - Unable to get a URL \(uriComponent)")
+                return nil
+            }
+            var urlRequest = URLRequest(url: finishedUrl)
+            urlRequest.httpMethod = "GET"
+            let (data, response, error) = await request(req: urlRequest)
+            if let response = response as? HTTPURLResponse, response.isResponseOK() {
+                guard let data = data else { Logger.log(.error, "Error converting data from server"); return nil }
+                guard let result = try? JSONDecoder().decode([T].self, from: data) else {
+                    return nil
+                }
+                return result
+            } else {
+                let body = String(data: data ?? Data(), encoding: String.Encoding.utf8)
+                Logger.log(.error, "GET error: \(body as String?) \(response as URLResponse?) \(error as Error?)")
+                return nil
+            }
+        }
+        
+        static func getMultipleReferences<T:Encodable & Decodable & ThreadConfined>(uriComponent: String = "", size: Int? = nil) async -> Result<[ThreadSafeReference<T>]?, Error> {
+            guard var urlComponents = URLComponents(string: ConfigManager.API_STAGING_URI + uriComponent) else {
+                Logger.log(.error, "🔴🔴 - Unable to build a URL from: \(uriComponent)")
+                return .failure(RequestError.getReferencesError)
+            }
+            
+            //  set page-size if we have one provided
+            if let size = size {
+                urlComponents.queryItems = [
+                    URLQueryItem(name: "size", value: "\(size)")
+                ]
+            }
+            
+            //  finish up urlComponents into URL
+            guard let finishedUrl = urlComponents.url else {
+                Logger.log(.error, "🔴🔴 - Unable to get a URL \(uriComponent)")
+                return .failure(RequestError.getReferencesError)
+            }
+            
+            var urlRequest = URLRequest(url: finishedUrl)
+            urlRequest.httpMethod = "GET"
+            let (data, response, error) = await request(req: urlRequest)
+            if let response = response as? HTTPURLResponse, response.isResponseOK() {
+                guard let data = data else { Logger.log(.error, "Error converting data from server"); return .failure(RequestError.getReferencesError) }
+                guard let result = try? JSONDecoder().decode([T].self, from: data) else {
+                    return .failure(RequestError.getReferencesError)
+                }
+                let ref = result.map({ ThreadSafeReference(to: $0) })
+                return .success(ref)
+            } else {
+                let body = String(data: data ?? Data(), encoding: String.Encoding.utf8)
+                Logger.log(.error, "GET error: \(body as String?) \(response as URLResponse?) \(error as Error?)")
+                return .failure(RequestError.getReferencesError)
+            }
+        }
+        
+    }
+    
+    
+    /*
+     Vet Import Link (vet invites user to use daphnee)
+     */
+    @MainActor class VetInvite: CustomRequest {
+        static let uriComponent: String = "pets/import-pet"
+        static func confirm(req: VetInvitationPost) async -> Result<RealmPet, Error> {
+            guard let payload = try? JSONEncoder().encode(req) else { Logger.log(.error, "Error while encoding VetInvitationPost JSON"); return .failure(RequestError.postRequestError)}
+            let result: Result<RealmPet, Error> = await super.post(uriComponent: self.uriComponent, requestBody: payload)
+            switch result {
+            case .success(let payload):
+                Logger.log(.success, "[VetInvite] Successfully retrieved pet")
+                return .success(payload)
+            case .failure(let error):
+                Logger.log(.error, "[VetInvite] Error: \(error)")
+                return .failure(error)
+            }
+        }
+    }
+    
+    
+    
+    /*
+     Pet Share Info Link (share infos about a pet + owner)
+     */
+    @MainActor class PetShareInfoLink: CustomRequest {
+        static let uriComponent: String = "pets/share-data"
+        static func getInfoLink(req: ShareInfoRequest) async -> Result<CodableShareLink, Error> {
+            guard let payload = try? JSONEncoder().encode(req) else { Logger.log(.error, "Error while encoding ShareInfoRequest JSON"); return .failure(RequestError.postRequestError)}
+            let result: Result<CodableShareLink, Error> = await super.post(uriComponent: self.uriComponent, requestBody: payload)
+            switch result {
+            case .success(let payload):
+                print(payload.link)
+                return .success(payload)
+            case .failure(let error):
+                return .failure(error)
+            }
+        }
+    }
+    
+    
+    /*
+     Pet Share Link
+     */
+    @MainActor class PetShareLink: CustomRequest {
+        static let uriComponent: String = "pets/"
+        static func getInvitationLink(petId: String) async -> Result<CodableShareLink, Error> {
+            let result: Result<CodableShareLink, Error> = await super.post(uriComponent: self.uriComponent + petId + "/share")
+            switch result {
+            case .success(let payload):
+                print(payload.link)
+                return .success(payload)
+            case .failure(let error):
+                return .failure(error)
+            }
+        }
+    }
+    
+    
+    /*
+     Pet Join Carer Group
+     */
+    @MainActor class PetJoinCarerGroup: CustomRequest {
+        static let uriComponent: String = "pets/"
+        
+        private struct TokenCodable: Codable {
+            var token: String
+        }
+        
+        static func joinCarerGroup(invitation: CarerInvitation) async -> (Result<CodableJoinCarerGroupResult, Error>) {
+            let petId = invitation.payload.pet._id
+            let tokenCodable = TokenCodable(token: invitation.token)
+            guard let token = try? JSONEncoder().encode(tokenCodable) else { Logger.log(.error, "Error while encoding Token JSON"); return .failure(RequestError.postRequestError)}
+            let result: Result<CodableJoinCarerGroupResult, Error> = await super.post(uriComponent: self.uriComponent + "\(petId)/join", requestBody: token)
+            switch result {
+            case .success(_):
+                Logger.log(.success, "[PET_CARER_JOIN] \(petId) Sucessfully joined carer group")
+            case .failure(let failure):
+                Logger.log(.error, "[PET_CARER_JOIN] \(petId) Error while joining carer group : \(failure)")
+            }
+            return result
+        }
+    }
+    
+    
+    /*
+     Pet CRUD
+     */
+    @MainActor class Pet: CustomRequest {
+        static let uriComponent: String = "pets/"
+        
+        static func deleteCarer(petId: String, carerId: String) async -> Bool {
+            let success = await super.delete(uriComponent: self.uriComponent + petId + "/carers/\(carerId)")
+            if success {
+                Logger.log(.success, "[PET_CARER] pet: \(petId) - carer: \(carerId) Sucessfully deleted on backend")
+            } else {
+                Logger.log(.error, "[PET_CARER] pet: \(petId) - carer: \(carerId) Error while deleting on backend")
+            }
+            return success
+        }
+        
+        static func delete(petId: String) async {
+            let success = await super.delete(uriComponent: self.uriComponent + petId)
+            if success {
+                Logger.log(.success, "[PET] \(petId) Sucessfully deleted on backend")
+                RealmPetManager.unmark(petId, marker: .NEEDS_DELETION)
+            } else {
+                Logger.log(.error, "[PET] \(petId) Error while deleting on backend")
+                RealmPetManager.mark(petId, marker: .NEEDS_DELETION)
+            }
+        }
+        
+        static func post(petId: String) async {
+            let realm = try! await Realm()
+            guard let pet = realm.object(ofType: RealmPet.self, forPrimaryKey: petId) else {
+                Logger.log(.error, "[PET] Can't get pet, dropping out")
+                return
+            }
+            
+            //  upload image if set
+            if let image = pet.image {
+                guard let url = ImageCache.getImageCache().getURL(fileName: image.fileName) else {
+                    Logger.log(.error, "Can't get file URL")
+                    return
+                }
+                await RequestManager.File.post(fileURL: url, fileId: image.fileId, isPublic: true)
+                Logger.log(.success, "File \(image.fileName) uploaded apparently")
+            }
+            
+            guard let payload = try? JSONEncoder().encode(pet) else { Logger.log(.error, "Error while encoding Pet JSON"); return }
+            let result: Result<RealmPet, Error> = await super.post(uriComponent: self.uriComponent, requestBody: payload)
+            switch result {
+            case .success(_):
+                RealmPetManager.unmark(petId, marker: .NEEDS_INITIAL_SYNC_TO_BACKEND)
+                Logger.log(.success, "[PET] \(petId) Sucessfully posted on backend")
+            case .failure(let failure):
+                RealmPetManager.mark(petId, marker: .NEEDS_INITIAL_SYNC_TO_BACKEND)
+                Logger.log(.error, "[PET] \(petId) Error while posting pet: \(failure)")
+            }
+        }
+        
+        static func patch(petId: String) async {
+            let realm = try! await Realm()
+            guard let pet = realm.object(ofType: RealmPet.self, forPrimaryKey: petId) else {
+                Logger.log(.error, "[PET] Can't get pet, dropping out")
+                return
+            }
+            
+            //  upload image if set
+            if let image = pet.image {
+                guard let url = ImageCache.getImageCache().getURL(fileName: image.fileName) else {
+                    Logger.log(.error, "[PET] Can't get file URL")
+                    return
+                }
+                await RequestManager.File.post(fileURL: url, fileId: image.fileId, isPublic: true)
+                Logger.log(.success, "[PET] File \(image.fileName) uploaded apparently")
+            }
+            
+            guard let payload = try? JSONEncoder().encode(pet) else { Logger.log(.error, "Error while encoding Pet JSON"); return }
+            let successful = await super.patch(uriComponent: self.uriComponent + pet.id, requestBody: payload)
+            if successful {
+                RealmPetManager.unmark(petId, marker: .NEEDS_UPDATE_ON_THE_BACKEND)
+                Logger.log(.success, "[PET] \(petId) Sucessfully patched on backend")
+            } else {
+                RealmPetManager.mark(petId, marker: .NEEDS_UPDATE_ON_THE_BACKEND)
+                Logger.log(.error, "[PET] \(petId) Error while patching pet")
+            }
+        }
+        
+        static func get(pet: RealmPet) async -> (RealmPet?) {
+            let pet: RealmPet? = await super.getSingle(uriComponent: self.uriComponent + pet.id)
+            return pet
+        }
+        
+        static func getAll() async -> [RealmPet]? {
+            let pets: [RealmPet]? = await super.getMultiple(uriComponent: self.uriComponent)
+            return pets
+        }
+        
+        static func getAllRefs() async -> Result<[ThreadSafeReference<RealmPet>]?, Error> {
+            let petsRefs: Result<[ThreadSafeReference<RealmPet>]?, Error> = await super.getMultipleReferences(uriComponent: self.uriComponent)
+            return petsRefs
+        }
+    }
+    
+    
+    /**
+     Profile CRUD
+     */
+    @MainActor class Profile: CustomRequest {
+        static let uriComponent: String = "app-auth/external/metadata/"
+        static let uriComponentCarers: String = "app-auth/external/metadata-for-co-carers/"
+        
+        static func post() async {
+            let realm = try! await Realm()
+            let profile = realm.object(ofType: RealmProfile.self, forPrimaryKey: 1)
+            
+            if let profile = profile,
+               let image = profile.image,
+               let imageUrl = ImageCache.getImageCache().getURL(fileName: image.fileName),
+               image.dateTransferred.isNil {
+                await RequestManager.File.post(fileURL: imageUrl, fileId: image.fileId, isPublic: true)
+            }
+            
+            guard let payload = try? JSONEncoder().encode(profile) else { Logger.log(.error, "Error while encoding Profile to JSON"); return }
+            let result: Result<RealmProfile, Error> = await super.post(uriComponent: self.uriComponent, requestBody: payload)
+            switch result {
+            case .success(_):
+                Logger.log(.success, "Backend successfully POSTed profile")
+            case .failure(let failure):
+                Logger.log(.error, "Backend failed to POST profile: \(failure)")
+            }
+        }
+        
+        static func get() async -> (RealmProfile?) {
+            let profile: RealmProfile? = await super.getSingle(uriComponent: self.uriComponent)
+            return profile
+        }
+        
+        static func getCarers() async -> [RealmProfile] {
+            if let profiles: [RealmProfile] = await super.getMultiple(uriComponent: self.uriComponentCarers) {
+                return profiles
+            }
+            return []
+        }
+        
+        static func delete() async -> Bool {
+            let success = await super.delete(uriComponent: self.uriComponent)
+            if success {
+                Logger.log(.success, "[PROFILE] Sucessfully deleted on backend")
+            } else {
+                Logger.log(.error, "[PROFILE] Error while deleting on backend")
+            }
+            return success
+        }
+    }
+    
+    
+    /**
+     File CRUD
+     */
+    @MainActor class File: CustomRequest {
+        static let uriComponent: String = "documents/file/"
+//        static let uriComponentPublic: String = "documents/file/public/"
+        static let uriComponentMetadata: String = "documents/file/metadata/"
+        
+        static func post(fileURL: URL, fileId: String, isPublic: Bool = false) async -> Bool {
+            guard let apiURL = URL(string: ConfigManager.API_STAGING_URI + uriComponent) else { Logger.log(.error, "Error while building API URL"); return false }
+            let req = MultipartFormDataRequest(url: apiURL)
+            req.addTextField(named: "documentType", value: "2")
+            req.addTextField(named: "isPublic", value: isPublic ? "true" : "false")
+            guard let data = try? Data(contentsOf: fileURL) else { Logger.log(.error, "Can't get data for file \(fileURL.absoluteString)"); return false }
+            let fileName = fileURL.lastPathComponent
+            req.addDataField(named: "file", data: data, mimeType: fileURL.mimeType(), fileName: fileName)
+            let (success, response) = await super.post(uriComponent: self.uriComponent, multipartRequest: req)
+            if success {
+                Logger.log(.success, "[File.POST] - Successfully posted file \(fileURL.absoluteString) to Backend")
+                Logger.log(.success, "\(response as RealmFile?)")
+
+                let realm = try! await Realm()
+                if let file = realm.objects(RealmFile.self).where({ $0.fileId == fileId }).first,
+                let response = response {
+                    Logger.log(.action, "[File.POST] - moving file with fileId \(fileId) to new backend fileId \(response.fileId)")
+                    try! realm.write {
+                        file.fileId = response.fileId
+                        file.dateTransferred = Date()
+                    }
+                }
+            } else {
+                Logger.log(.error, "[File.POST] - Error while posting file \(fileURL.absoluteString) to Backend")
+                Logger.log(.error, "\(response as RealmFile?)")
+            }
+            return success
+        }
+        
+        static func getMetadata(fileId: String) async -> (RealmFile?) {
+            let file: RealmFile? = await super.getSingle(uriComponent: self.uriComponentMetadata + fileId)
+            return file
+        }
+        
+        static func get(fileId: String, mimeType: String) async -> (Data?) {
+            let data: Data? = await super.getRawData(uriComponent: self.uriComponent + fileId, mimeType: mimeType)
+            return data
+        }
+    }
+    
+    
+    /**
+     Task CRUD
+     */
+    @MainActor class Task: CustomRequest {
+        static let uriComponent: String = "tasks/"
+        
+        static func post(taskId: String) async {
+            let realm = try! await Realm()
+            let task = realm.object(ofType: RealmTask.self, forPrimaryKey: taskId)
+            guard let payload = try? JSONEncoder().encode(task) else {
+                Logger.log(.error, "Error while encoding Task JSON")
+                return
+            }
+            let result: Result<RealmTask, Error> = await super.post(uriComponent: self.uriComponent, requestBody: payload)
+            switch result {
+            case .success(_):
+                RealmTaskManager.unmark(taskId, marker: .NEEDS_INITIAL_SYNC_TO_BACKEND)
+                Logger.log(.success, "Backend successfully POSTed Task")
+            case .failure(let failure):
+                RealmTaskManager.mark(taskId, marker: .NEEDS_INITIAL_SYNC_TO_BACKEND)
+                Logger.log(.error, "Backend failed to POST Task : \(failure)")
+            }
+        }
+        
+        static func patch(taskId: String) async {
+            let realm = try! await Realm()
+            let task = realm.object(ofType: RealmTask.self, forPrimaryKey: taskId)
+            guard let payload = try? JSONEncoder().encode(task) else {
+                Logger.log(.error, "Error while encoding Task JSON")
+                return
+            }
+            let successful = await super.patch(uriComponent: self.uriComponent + taskId, requestBody: payload)
+            if successful {
+                RealmTaskManager.unmark(taskId, marker: .NEEDS_UPDATE_ON_THE_BACKEND)
+                Logger.log(.success, "Backend successfully patched Task \(taskId)")
+            } else {
+                RealmTaskManager.mark(taskId, marker: .NEEDS_UPDATE_ON_THE_BACKEND)
+                Logger.log(.error, "Backend failed to patch Task")
+            }
+        }
+        
+        static func delete(taskId: String) async -> (Bool) {
+            let success = await super.delete(uriComponent: self.uriComponent + taskId)
+            return success
+        }
+        
+        static func get(taskId: String) async -> (RealmTask?) {
+            let task: RealmTask? = await super.getSingle(uriComponent: self.uriComponent + taskId)
+            return task
+        }
+        
+        static func getAll() async -> [RealmTask]? {
+            let tasks: [RealmTask]? = await super.getMultiple(uriComponent: self.uriComponent + "?endDate=" + Date().iso8601withFractionalSeconds)
+            return tasks
+        }
+        
+        static func getAllRefs() async -> Result<[ThreadSafeReference<RealmTask>]?, Error> {
+            let taskRefs: Result<[ThreadSafeReference<RealmTask>]?, Error> = await super.getMultipleReferences(uriComponent: self.uriComponent)
+            return taskRefs
+        }
+    }
+    
+    
+    /**
+     TaskInstance CRUD
+     */
+    @MainActor class TaskInstance: CustomRequest {
+        static let uriComponent: String = "tasks/instance/"
+        
+        static func post(taskInstanceId: String) async {
+            let realm = try! await Realm()
+            let taskInstance = realm.object(ofType: RealmTaskInstance.self, forPrimaryKey: taskInstanceId)
+            guard let payload = try? JSONEncoder().encode(taskInstance) else {
+                Logger.log(.error, "Error while encoding TaskInstance to JSON");
+                return
+            }
+            let result: Result<RealmTaskInstance, Error> = await super.post(uriComponent: self.uriComponent, requestBody: payload)
+            switch result {
+            case .success(_):
+                Logger.log(.success, "Backend successfully POSTed TaskInstance")
+            case .failure(let failure):
+                Logger.log(.error, "Backend failed to POST TaskInstance : \(failure)")
+            }
+        }
+        
+        static func patch(taskInstanceId: String) async {
+            let realm = try! await Realm()
+            let taskInstance = realm.object(ofType: RealmTaskInstance.self, forPrimaryKey: taskInstanceId)
+            guard let payload = try? JSONEncoder().encode(taskInstance) else { Logger.log(.error, "Error while encoding TaskInstance JSON"); return }
+            let successful = await super.patch(uriComponent: self.uriComponent + taskInstanceId, requestBody: payload)
+            if successful {
+                Logger.log(.success, "Backend successfully patched Task \(taskInstanceId)")
+            } else {
+                Logger.log(.error, "Backend failed to patch Task")
+            }
+        }
+        
+        static func delete(taskInstanceId: String) async -> (Bool) {
+            let success = await super.delete(uriComponent: self.uriComponent + taskInstanceId)
+            return success
+        }
+    }
+    
+    
+    /**
+     Diary Entries CRUD
+     */
+    @MainActor class DiaryEntry: CustomRequest {
+        static let uriComponent: String = "diary-entries/"
+        
+        static func post(diaryEntryId: String, fileDoneUploading: (_ success: Bool)->() = {success in}) async {
+            let realm = try! await Realm()
+            guard let diaryEntry = realm.object(ofType: RealmDiary.self, forPrimaryKey: diaryEntryId) else {
+                Logger.log(.error, "[DiaryEntry.POST] - couldn't find diaryEntry, dropping out")
+                return
+            }
+            
+            //  upload available images / videos
+            var files: [String: String] = [:]
+            for file in diaryEntry.media {
+                files[file.fileId] = file.fileName
+            }
+            for fileId in files.keys {
+                guard let fileName = files[fileId] else {
+                    continue
+                }
+                if let url = ImageCache.getImageCache().getURL(fileName: fileName) {
+                    Logger.log(.action, "[DiaryEntry] - found file at \(url.absoluteString), starting upload")
+                    let success = await RequestManager.File.post(fileURL: url, fileId: fileId)
+                    if !success {
+                        Logger.log(.error, "[DiaryEntry] - error uploading \(url.absoluteString), aborting sync of diaryEntry")
+                        fileDoneUploading(false)
+                        return
+                    }
+                    fileDoneUploading(true)
+                    Logger.log(.success, "[DiaryEntry] - successfully uploaded \(url.absoluteString)")
+                } else {
+                    Logger.log(.error, "[DiaryEntry] - wasn't able to find \(fileName) in the imagecache")
+                }
+            }
+            
+            guard let payload = try? JSONEncoder().encode(diaryEntry) else { Logger.log(.error, "Error while encoding DiaryEntry to JSON"); return }
+            let result: Result<RealmDiary, Error> = await super.post(uriComponent: self.uriComponent, requestBody: payload)
+            switch result {
+            case .success(_):
+                RealmDiaryManager.unmark(diaryEntryId, marker: .NEEDS_INITIAL_SYNC_TO_BACKEND)
+                Logger.log(.success, "[DiaryEntry] - Backend successfully POSTed diaryEntry")
+            case .failure(let failure):
+                RealmDiaryManager.mark(diaryEntryId, marker: .NEEDS_INITIAL_SYNC_TO_BACKEND)
+                Logger.log(.error, "[DiaryEntry] - Backend failed to POST diaryEntry : \(failure)")
+            }
+        }
+        
+        static func patch(diaryEntryId: String) async {
+            let realm = try! await Realm()
+            let diaryEntry = realm.object(ofType: RealmDiary.self, forPrimaryKey: diaryEntryId)
+            guard let payload = try? JSONEncoder().encode(diaryEntry) else { Logger.log(.error, "Error while encoding DiaryEntry JSON"); return }
+            let successful = await super.patch(uriComponent: self.uriComponent + diaryEntryId, requestBody: payload)
+            if successful {
+                RealmDiaryManager.unmark(diaryEntryId, marker: .NEEDS_UPDATE_ON_THE_BACKEND)
+                Logger.log(.success, "[DiaryEntry] - Backend successfully patched DiaryEntry \(diaryEntryId)")
+            } else {
+                RealmDiaryManager.mark(diaryEntryId, marker: .NEEDS_UPDATE_ON_THE_BACKEND)
+                Logger.log(.error, "[DiaryEntry] - Backend failed to patch DiaryEntry")
+            }
+        }
+        
+        static func delete(diaryEntryId: String) async {
+            let success = await super.delete(uriComponent: self.uriComponent + diaryEntryId)
+            if success {
+                RealmDiaryManager.unmark(diaryEntryId, marker: .NEEDS_DELETION)
+                Logger.log(.success, "[DiaryEntry] - Sucessfully deleted on backend")
+            } else {
+                RealmDiaryManager.mark(diaryEntryId, marker: .NEEDS_DELETION)
+                Logger.log(.error, "[DiaryEntry] - Error while deleting on backend")
+            }
+        }
+        
+        static func getAll(_ page: Int = 1) async -> [RealmDiary]? {
+            let diaryEntries: [RealmDiary]? = await super.getMultiple(uriComponent: self.uriComponent, page: page)
+            return diaryEntries
+        }
+        
+        static func getAllRefs() async -> Result<[ThreadSafeReference<RealmDiary>]?, Error> {
+            let paginatedDiaryEntries: Result<[ThreadSafeReference<RealmDiary>]?, Error> = await super.getMultipleReferences(uriComponent: self.uriComponent, size: 100)
+            return paginatedDiaryEntries
+        }
+    }
+    
+    
+    /**
+     Document CRUD
+     */
+    @MainActor class Document: CustomRequest {
+        static let uriComponent: String = "documents/"
+        static let staticUriComponent: String = "documents/"
+        
+        static func delete(documentId: String) async {
+            let success = await super.delete(uriComponent: self.uriComponent + documentId)
+            if success {
+                RealmDocumentManager.unmark(documentId, marker: .NEEDS_DELETION)
+                Logger.log(.success, "[DOC] - Sucessfully deleted doc \(documentId) on backend")
+            } else {
+                RealmDocumentManager.mark(documentId, marker: .NEEDS_DELETION)
+                Logger.log(.error, "[DOC] - Error while deleting doc \(documentId) on backend")
+            }
+        }
+        
+        static func post(documentId: String) async {
+            let realm = try! await Realm()
+            let document = realm.object(ofType: RealmDocument.self, forPrimaryKey: documentId)
+            guard let payload = try? JSONEncoder().encode(document) else { Logger.log(.error, "Error while encoding Document JSON"); return }
+            let result: Result<RealmDocument, Error> = await super.post(uriComponent: self.staticUriComponent, requestBody: payload)
+            switch result {
+            case .success(_):
+                RealmDocumentManager.unmark(documentId, marker: .NEEDS_INITIAL_SYNC_TO_BACKEND)
+                Logger.log(.success, "[DOC] - Successfully posted \(documentId) document to Backend")
+            case .failure(let failure):
+                RealmDocumentManager.mark(documentId, marker: .NEEDS_INITIAL_SYNC_TO_BACKEND)
+                Logger.log(.error, "[DOC] - Error while posting document to Backend : \(failure)")
+            }
+        }
+        
+        static func patch(documentId: String) async {
+            let realm = try! await Realm()
+            let document = realm.object(ofType: RealmDocument.self, forPrimaryKey: documentId)
+            guard let payload = try? JSONEncoder().encode(document) else { Logger.log(.error, "Error while encoding Document JSON"); return }
+            let successful = await super.patch(uriComponent: self.uriComponent + documentId, requestBody: payload)
+            if successful {
+                RealmDocumentManager.unmark(documentId, marker: .NEEDS_UPDATE_ON_THE_BACKEND)
+                Logger.log(.success, "[DOC] - Backend successfully patched document \(documentId)")
+            } else {
+                RealmDocumentManager.mark(documentId, marker: .NEEDS_UPDATE_ON_THE_BACKEND)
+                Logger.log(.error, "[DOC] - Backend failed to patch document")
+            }
+        }
+        
+        static func get(document: RealmDocument) async -> (RealmDocument?) {
+            let doc: RealmDocument? = await super.getSingle(uriComponent: self.uriComponent + document.id)
+            return doc
+        }
+        
+        static func getAllRefs() async -> Result<APIPaginatedWrapperReferences<RealmDocument>?, Error> {
+            let paginatedDocs: Result<APIPaginatedWrapperReferences<RealmDocument>?, Error> = await super.getSinglePaginatedReferences(uriComponent: self.uriComponent)
+            return paginatedDocs
+        }
+        
+    }
+    
+}
+
+class APIPaginatedWrapper<T: Codable & ThreadConfined>: Codable {
+    var page: Int
+    var size: Int
+    var totalCount: Int
+    var entries: [T]
+}
+
+struct APIPaginatedWrapperReferences<T: Codable & ThreadConfined> {
+    var page: Int
+    var size: Int
+    var totalCount: Int
+    var entries: [ThreadSafeReference<T>]
+}
+
+extension HTTPURLResponse {
+    func isResponseOK() -> Bool {
+        return (200...299).contains(self.statusCode)
+    }
+}
+
+struct MultipartFormDataRequest {
+    private let boundary: String = UUID().uuidString
+    private var httpBody = NSMutableData()
+    let url: URL
+    
+    init(url: URL) {
+        self.url = url
+    }
+    
+    func addTextField(named name: String, value: String) {
+        httpBody.appendString(textFormField(named: name, value: value))
+    }
+    
+    private func textFormField(named name: String, value: String) -> String {
+        var fieldString = "--\(boundary)\r\n"
+        fieldString += "Content-Disposition: form-data; name=\"\(name)\"\r\n"
+        fieldString += "Content-Type: text/plain; charset=ISO-8859-1\r\n"
+        fieldString += "Content-Transfer-Encoding: 8bit\r\n"
+        fieldString += "\r\n"
+        fieldString += "\(value)\r\n"
+        
+        return fieldString
+    }
+    
+    func addDataField(named name: String, data: Data, mimeType: String, fileName: String = "") {
+        if fileName.isEmpty {
+            httpBody.append(dataFormField(named: name, data: data, mimeType: mimeType, fileName: data.sha256() + ".jpg"))
+        } else {
+            httpBody.append(dataFormField(named: name, data: data, mimeType: mimeType, fileName: fileName))
+        }
+        
+    }
+    
+    private func dataFormField(named name: String,
+                               data: Data,
+                               mimeType: String,
+                               fileName: String) -> Data {
+        let fieldData = NSMutableData()
+        
+        fieldData.appendString("--\(boundary)\r\n")
+        fieldData.appendString("Content-Disposition: form-data; name=\"\(name)\"; filename=\"\(fileName)\"\r\n")
+        fieldData.appendString("Content-Type: \(mimeType)\r\n")
+        fieldData.appendString("\r\n")
+        fieldData.append(data)
+        fieldData.appendString("\r\n")
+        
+        Logger.log(.warning, "Name: \(name), MimeType: \(mimeType)")
+        
+        return fieldData as Data
+    }
+    
+    func asURLRequest() -> URLRequest {
+        var request = URLRequest(url: url)
+        
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        
+        httpBody.appendString("--\(boundary)--")
+        request.httpBody = httpBody as Data
+        return request
+    }
+}
+
+extension NSMutableData {
+    func appendString(_ string: String) {
+        if let data = string.data(using: .utf8) {
+            self.append(data)
+        }
+    }
+}
+
+extension URLSession {
+    func dataTask(with request: MultipartFormDataRequest,
+                  completionHandler: @escaping (Data?, URLResponse?, Error?) -> Void)
+    -> URLSessionDataTask {
+        return dataTask(with: request.asURLRequest(), completionHandler: completionHandler)
+    }
+}
+
+internal let DEFAULT_MIME_TYPE = "application/octet-stream"
+internal let mimeTypes = [
+"html": "text/html",
+"htm": "text/html",
+"shtml": "text/html",
+"css": "text/css",
+"xml": "text/xml",
+"gif": "image/gif",
+"jpeg": "image/jpeg",
+"jpg": "image/jpeg",
+"js": "application/javascript",
+"atom": "application/atom+xml",
+"rss": "application/rss+xml",
+"mml": "text/mathml",
+"txt": "text/plain",
+"jad": "text/vnd.sun.j2me.app-descriptor",
+"wml": "text/vnd.wap.wml",
+"htc": "text/x-component",
+"png": "image/png",
+"tif": "image/tiff",
+"tiff": "image/tiff",
+"wbmp": "image/vnd.wap.wbmp",
+"ico": "image/x-icon",
+"jng": "image/x-jng",
+"bmp": "image/x-ms-bmp",
+"svg": "image/svg+xml",
+"svgz": "image/svg+xml",
+"webp": "image/webp",
+"woff": "application/font-woff",
+"jar": "application/java-archive",
+"war": "application/java-archive",
+"ear": "application/java-archive",
+"json": "application/json",
+"hqx": "application/mac-binhex40",
+"doc": "application/msword",
+"pdf": "application/pdf",
+"ps": "application/postscript",
+"eps": "application/postscript",
+"ai": "application/postscript",
+"rtf": "application/rtf",
+"m3u8": "application/vnd.apple.mpegurl",
+"xls": "application/vnd.ms-excel",
+"eot": "application/vnd.ms-fontobject",
+"ppt": "application/vnd.ms-powerpoint",
+"wmlc": "application/vnd.wap.wmlc",
+"kml": "application/vnd.google-earth.kml+xml",
+"kmz": "application/vnd.google-earth.kmz",
+"7z": "application/x-7z-compressed",
+"cco": "application/x-cocoa",
+"jardiff": "application/x-java-archive-diff",
+"jnlp": "application/x-java-jnlp-file",
+"run": "application/x-makeself",
+"pl": "application/x-perl",
+"pm": "application/x-perl",
+"prc": "application/x-pilot",
+"pdb": "application/x-pilot",
+"rar": "application/x-rar-compressed",
+"rpm": "application/x-redhat-package-manager",
+"sea": "application/x-sea",
+"swf": "application/x-shockwave-flash",
+"sit": "application/x-stuffit",
+"tcl": "application/x-tcl",
+"tk": "application/x-tcl",
+"der": "application/x-x509-ca-cert",
+"pem": "application/x-x509-ca-cert",
+"crt": "application/x-x509-ca-cert",
+"xpi": "application/x-xpinstall",
+"xhtml": "application/xhtml+xml",
+"xspf": "application/xspf+xml",
+"zip": "application/zip",
+"bin": "application/octet-stream",
+"exe": "application/octet-stream",
+"dll": "application/octet-stream",
+"deb": "application/octet-stream",
+"dmg": "application/octet-stream",
+"iso": "application/octet-stream",
+"img": "application/octet-stream",
+"msi": "application/octet-stream",
+"msp": "application/octet-stream",
+"msm": "application/octet-stream",
+"docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+"xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+"pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+"mid": "audio/midi",
+"midi": "audio/midi",
+"kar": "audio/midi",
+"mp3": "audio/mpeg",
+"ogg": "audio/ogg",
+"m4a": "audio/x-m4a",
+"ra": "audio/x-realaudio",
+"3gpp": "video/3gpp",
+"3gp": "video/3gpp",
+"ts": "video/mp2t",
+"mp4": "video/mp4",
+"mpeg": "video/mpeg",
+"mpg": "video/mpeg",
+"mov": "video/quicktime",
+"webm": "video/webm",
+"flv": "video/x-flv",
+"m4v": "video/x-m4v",
+"mng": "video/x-mng",
+"asx": "video/x-ms-asf",
+"asf": "video/x-ms-asf",
+"wmv": "video/x-ms-wmv",
+"avi": "video/x-msvideo"
+]
+
+internal func MimeType(ext: String?) -> String {
+    if ext != nil && mimeTypes.contains(where: { $0.0 == ext!.lowercased() }) {
+        return mimeTypes[ext!.lowercased()]!
+    }
+    return DEFAULT_MIME_TYPE
+}
+
+extension URL {
+    public func mimeType() -> String {
+        return MimeType(ext: self.pathExtension)
+    }
+}
+
+
+extension Data {
+    private static let mimeTypeSignatures: [UInt8 : String] = [
+        0xFF : "image/jpeg",
+        0x89 : "image/png",
+        0x47 : "image/gif",
+        0x49 : "image/tiff",
+        0x4D : "image/tiff",
+        0x25 : "application/pdf",
+        0xD0 : "application/vnd",
+        0x46 : "text/plain",
+    ]
+    
+    var mimeType: String {
+        var c: UInt8 = 0
+        copyBytes(to: &c, count: 1)
+        return Data.mimeTypeSignatures[c] ?? "application/octet-stream"
+    }
+}
+
