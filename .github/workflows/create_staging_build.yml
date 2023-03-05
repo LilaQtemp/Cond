@@ -20,3 +20,6 @@ jobs:
       - run: cp ./release_staging/GoogleFile ./GoogleFile
       
       - uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          branch: release_staging
+          commit_message: Creating Staging Release
