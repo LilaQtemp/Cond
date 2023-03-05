@@ -24,8 +24,8 @@ class RequestManager {
 
     //  superclass, don't call this directly
     class CustomRequest {
-//        ConfigManager.TOTAL_CUSTOM_URI
-        let uri = ConfigManager.TOTAL_CUSTOM_URI
+//        ConfigManager.API_STAGING_URI
+        let uri = ConfigManager.API_STAGING_URI
         
         static func request(req: URLRequest) async -> (Data?, URLResponse?, Error?) {
             guard let token = try? await Auth.auth().currentUser?.idTokenForcingRefresh(true) else {
@@ -67,7 +67,7 @@ class RequestManager {
         }
         
         static func delete(uriComponent: String) async -> (Bool) {
-            guard let url = URL(string: ConfigManager.TOTAL_CUSTOM_URI + uriComponent) else {
+            guard let url = URL(string: ConfigManager.API_STAGING_URI + uriComponent) else {
                 Logger.log(.error, "🔴🔴 - Unable to build a URL from: \(uriComponent)")
                 return false
             }
@@ -84,7 +84,7 @@ class RequestManager {
         }
         
         static func post<T:Encodable & Decodable>(uriComponent: String, requestBody: Data? = nil) async -> Result<T, Error> {
-            guard let url = URL(string: ConfigManager.TOTAL_CUSTOM_URI + uriComponent) else {
+            guard let url = URL(string: ConfigManager.API_STAGING_URI + uriComponent) else {
                 Logger.log(.error, "🔴🔴 - Unable to build a URL from: \(uriComponent)")
                 return .failure(RequestError.badURL)
             }
@@ -124,7 +124,7 @@ class RequestManager {
         }
         
         static func patch(uriComponent: String, requestBody: Data? = nil) async -> (Bool) {
-            guard let url = URL(string: ConfigManager.TOTAL_CUSTOM_URI + uriComponent) else {
+            guard let url = URL(string: ConfigManager.API_STAGING_URI + uriComponent) else {
                 Logger.log(.error, "🔴🔴 - Unable to build a URL from: \(uriComponent)")
                 return false
             }
@@ -142,7 +142,7 @@ class RequestManager {
         }
         
         static func getRawData(uriComponent: String, mimeType: String) async -> (Data?) {
-            guard let url = URL(string: ConfigManager.TOTAL_CUSTOM_URI + uriComponent) else {
+            guard let url = URL(string: ConfigManager.API_STAGING_URI + uriComponent) else {
                 Logger.log(.error, "🔴🔴 - Unable to build a URL from: \(uriComponent)")
                 return nil
             }
@@ -165,7 +165,7 @@ class RequestManager {
         }
         
         static func getSingle<T:Encodable & Decodable>(uriComponent: String) async -> (T?) {
-            guard let url = URL(string: ConfigManager.TOTAL_CUSTOM_URI + uriComponent) else {
+            guard let url = URL(string: ConfigManager.API_STAGING_URI + uriComponent) else {
                 Logger.log(.error, "🔴🔴 - Unable to build a URL from: \(uriComponent)")
                 return nil
             }
@@ -192,7 +192,7 @@ class RequestManager {
         }
         
         static func getSinglePaginated<T:Encodable & Decodable>(uriComponent: String) async -> (APIPaginatedWrapper<T>?) {
-            guard let url = URL(string: ConfigManager.TOTAL_CUSTOM_URI + uriComponent) else {
+            guard let url = URL(string: ConfigManager.API_STAGING_URI + uriComponent) else {
                 Logger.log(.error, "🔴🔴 - Unable to build a URL from: \(uriComponent)")
                 return nil
             }
@@ -221,7 +221,7 @@ class RequestManager {
         }
         
         static func getSinglePaginatedReferences<T:Encodable & Decodable>(uriComponent: String) async -> Result<APIPaginatedWrapperReferences<T>?, Error> {
-            guard let url = URL(string: ConfigManager.TOTAL_CUSTOM_URI + uriComponent) else {
+            guard let url = URL(string: ConfigManager.API_STAGING_URI + uriComponent) else {
                 Logger.log(.error, "🔴🔴 - Unable to build a URL from: \(uriComponent)")
                 return .failure(RequestError.getPaginatedReferencesError)
             }
@@ -251,7 +251,7 @@ class RequestManager {
         }
         
         static func getMultiple<T:Encodable & Decodable>(uriComponent: String = "", page: Int? = nil) async -> [T]? {
-            guard var url = URLComponents(string: ConfigManager.TOTAL_CUSTOM_URI + uriComponent) else {
+            guard var url = URLComponents(string: ConfigManager.API_STAGING_URI + uriComponent) else {
                 Logger.log(.error, "🔴🔴 - Unable to build a URL from: \(uriComponent)")
                 return nil
             }
@@ -281,7 +281,7 @@ class RequestManager {
         }
         
         static func getMultipleReferences<T:Encodable & Decodable & ThreadConfined>(uriComponent: String = "", size: Int? = nil) async -> Result<[ThreadSafeReference<T>]?, Error> {
-            guard var urlComponents = URLComponents(string: ConfigManager.TOTAL_CUSTOM_URI + uriComponent) else {
+            guard var urlComponents = URLComponents(string: ConfigManager.API_STAGING_URI + uriComponent) else {
                 Logger.log(.error, "🔴🔴 - Unable to build a URL from: \(uriComponent)")
                 return .failure(RequestError.getReferencesError)
             }
@@ -565,7 +565,7 @@ class RequestManager {
         static let uriComponentMetadata: String = "documents/file/metadata/"
         
         static func post(fileURL: URL, fileId: String, isPublic: Bool = false) async -> Bool {
-            guard let apiURL = URL(string: ConfigManager.TOTAL_CUSTOM_URI + uriComponent) else { Logger.log(.error, "Error while building API URL"); return false }
+            guard let apiURL = URL(string: ConfigManager.API_STAGING_URI + uriComponent) else { Logger.log(.error, "Error while building API URL"); return false }
             let req = MultipartFormDataRequest(url: apiURL)
             req.addTextField(named: "documentType", value: "2")
             req.addTextField(named: "isPublic", value: isPublic ? "true" : "false")
@@ -1094,4 +1094,3 @@ extension Data {
         return Data.mimeTypeSignatures[c] ?? "application/octet-stream"
     }
 }
-
