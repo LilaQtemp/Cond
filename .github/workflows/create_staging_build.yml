@@ -21,6 +21,4 @@ jobs:
       
       - uses: stefanzweifel/git-auto-commit-action@v4
         with:
-          branch: release_staging
           commit_message: Creating Staging Release
-          push_options: '--force'
