@@ -14,7 +14,13 @@ jobs:
         
       - run: fastlane run set_info_plist_value path:Info.plist key:MyReplacableKey value:KEYED_TO_STAGING  
       
-      
+      - name: Find and Replace
+        uses: jacobtomlinson/gha-find-replace@v3
+        with:
+          find: "butt"
+          replace: "arsch"
+          include: "./ReplaceInMe"
+          regex: false
         
       - run: cp ./release_staging/GoogleFile ./GoogleFile
       
